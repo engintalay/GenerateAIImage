@@ -92,8 +92,37 @@ if device == "cuda":
 # -------------------------------------------------
 # Generation
 # -------------------------------------------------
+# -------------------------------------------------
+# Generation
+# -------------------------------------------------
 print("Generating image...")
 face_image = Image.open(REF_IMAGE_PATH).convert("RGB")
+
+# Callback to save intermediate steps
+intermediate_dir = os.path.join(OUTPUT_DIR, "intermediate")
+os.makedirs(intermediate_dir, exist_ok=True)
+
+def save_intermediate_step(step, timestep, latents):
+    # Save every 5 steps
+    if step % 5 == 0:
+        with torch.no_grad():
+            # Latents need to be scaled before decoding
+            latents_scaled = latents / vae.config.scaling_factor
+            
+            # Use the VAE to decode
+            # Note: With cpu_offload, we rely on hooks or manual movement. 
+            # Trying to use vae as is (accelerate should handle hooks if accessed via pipe.vae)
+            image = pipe.vae.decode(latents_scaled, return_dict=False)[0]
+            
+            # Post-process
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            image = (image * 255).round().astype("uint8")
+            image = Image.fromarray(image[0])
+            
+            image_path = os.path.join(intermediate_dir, f"step_{step:02d}.png")
+            image.save(image_path)
+            print(f"  [Step {step}] Saved intermediate image: {image_path}")
 
 image = pipe(
     prompt=PROMPT,
@@ -104,6 +133,8 @@ image = pipe(
     num_images_per_prompt=1,
     height=768,
     width=512,
+    callback=save_intermediate_step,
+    callback_steps=1,
     generator=torch.Generator(device).manual_seed(42)
 ).images[0]
 
