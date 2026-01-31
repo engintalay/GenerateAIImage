@@ -16,6 +16,9 @@ pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
     torch_dtype=dtype
 )
+# Disable NSFW checker
+pipe.safety_checker = None
+pipe.feature_extractor = None
 
 pipe = pipe.to(device)
 pipe.enable_attention_slicing()
