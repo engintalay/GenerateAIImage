@@ -67,9 +67,12 @@ pipe.feature_extractor = None
 
 # pipe = pipe.to(device) # CPU offload handles device placement
 
-# Fix for "black image" issue on some GPUs: Ensure VAE is in float32
-if device == "cuda":
-    pipe.vae = pipe.vae.to(dtype=torch.float32)
+
+# Fix for "black image" issue:
+# explicit cast removed to test if sd-vae-ft-mse works in float16
+# if device == "cuda":
+#    pipe.vae = pipe.vae.to(dtype=torch.float32)
+
 
 # -------------------------------------------------
 # IP-Adapter Setup
