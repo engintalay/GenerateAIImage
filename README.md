@@ -21,6 +21,8 @@ Bu proje, Stable Diffusion kullanarak verilen bir referans fotoğraftan yeni gö
    pip install --upgrade pip
    pip install torch torchvision torchaudio
    pip install diffusers transformers accelerate safetensors pillow opencv-python
+   pip install insightface onnxruntime
+
    ```
 
 ## Kullanım
