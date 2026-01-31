@@ -36,7 +36,7 @@ image = pipe(
     image=face_image,
     strength=0.6,
     guidance_scale=7.5,
-    num_inference_steps=30
+    num_inference_steps=5
 ).images[0]
 
 image.save("outputs/test_1.png")

@@ -36,10 +36,13 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # -------------------------------------------------
 # Device detection
 # -------------------------------------------------
+
 if torch.cuda.is_available():
     device = "cuda"
-    dtype = torch.float16
-    print("✔ CUDA detected – using NVIDIA GPU")
+    # GTX 16xx series has poor float16 support causing NaNs (black images).
+    # We force float32 to guarantee numerical stability.
+    dtype = torch.float32  
+    print("✔ CUDA detected – using NVIDIA GPU (forcing float32)")
 else:
     device = "cpu"
     dtype = torch.float32
@@ -61,18 +64,12 @@ pipe = StableDiffusionPipeline.from_pretrained(
     torch_dtype=dtype,
     vae=vae,
 )
-# Disable NSFW checker
+# Disable NSFW checker explicitly
 pipe.safety_checker = None
 pipe.feature_extractor = None
+pipe.requires_safety_checker = False
 
 # pipe = pipe.to(device) # CPU offload handles device placement
-
-
-# Fix for "black image" issue:
-# explicit cast removed to test if sd-vae-ft-mse works in float16
-# if device == "cuda":
-#    pipe.vae = pipe.vae.to(dtype=torch.float32)
-
 
 # -------------------------------------------------
 # IP-Adapter Setup
@@ -85,8 +82,12 @@ pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapt
 pipe.set_ip_adapter_scale(0.8)
 
 if device == "cuda":
-    # Enable CPU offload for 4GB VRAM - Must be called AFTER loading all components (like IP-Adapter)
-    pipe.enable_model_cpu_offload()
+    # Enable Sequential CPU offload for 4GB VRAM - Stronger than model_cpu_offload
+    # Required because float32 takes 2x memory
+    pipe.enable_sequential_cpu_offload()
+    pipe.enable_vae_slicing()
+    pipe.enable_vae_tiling()
+
 
 # -------------------------------------------------
 # Generation
@@ -107,3 +108,4 @@ image = pipe(
 output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME)
 image.save(output_path)
 print(f"✔ Output saved to {output_path}")
+
