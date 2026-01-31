@@ -2,7 +2,6 @@ import os
 import torch
 from PIL import Image
 from diffusers import StableDiffusionPipeline
-from diffusers.models import IPAdapter
 
 # -------------------------------------------------
 # Device detection (CUDA varsa otomatik kullan)
@@ -29,24 +28,23 @@ pipe = StableDiffusionPipeline.from_pretrained(
 pipe = pipe.to(device)
 
 # Memory optimizations
-pipe.enable_attention_slicing()
+# pipe.enable_attention_slicing()
 if device == "cuda":
     pipe.enable_xformers_memory_efficient_attention()
 
 # -------------------------------------------------
-# IP-Adapter Face
+# IP-Adapter Face Setup (Native Diffusers)
 # -------------------------------------------------
-ip_adapter = IPAdapter(
-    pipe,
-    "h94/IP-Adapter",
-    subfolder="models",
-    weight_name="ip-adapter-face_sd15.bin",
-    device=device
-)
+# Not: Modeli ilk kez indirirken internet gerekebilir.
+pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-full-face_sd15.bin")
+
+# Etkisini ayarlamak için (0.0 - 1.0 arası)
+pipe.set_ip_adapter_scale(0.6)
 
 # -------------------------------------------------
 # Reference image
 # -------------------------------------------------
+# Eğer dosya yoksa hata vermemesi için kontrol ekleyebiliriz veya kullanıcıya bırakırız.
 face_image = Image.open("refs/face.jpg").convert("RGB")
 
 prompt = (
@@ -63,15 +61,16 @@ negative_prompt = (
 # -------------------------------------------------
 # Generation
 # -------------------------------------------------
-images = ip_adapter.generate(
-    pil_image=face_image,
+# native diffusers kullanımında ip_adapter_image parametresi kullanılır
+image = pipe(
     prompt=prompt,
     negative_prompt=negative_prompt,
-    num_samples=1,
+    ip_adapter_image=face_image,
     num_inference_steps=30,
     guidance_scale=7.0,
-    seed=42
-)
+    num_images_per_prompt=1,
+    generator=torch.Generator(device).manual_seed(42) if device == "cpu" else torch.Generator(device).manual_seed(42)
+).images[0]
 
-images[0].save("outputs/ip_test_1.png")
+image.save("outputs/ip_test_1.png")
 print("✔ outputs/ip_test_1.png saved")
