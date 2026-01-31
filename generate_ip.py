@@ -1,8 +1,9 @@
+
 import os
 import sys
 import torch
 from PIL import Image
-from diffusers import StableDiffusionPipeline
+from diffusers import StableDiffusionPipeline, AutoencoderKL
 
 # -------------------------------------------------
 # Configuration
@@ -48,21 +49,27 @@ else:
 # Pipeline Initialization
 # -------------------------------------------------
 print("Loading Stable Diffusion pipeline...")
+
+# Load better VAE to fix black image/NaN issues
+vae = AutoencoderKL.from_pretrained(
+    "stabilityai/sd-vae-ft-mse",
+    torch_dtype=dtype
+)
+
 pipe = StableDiffusionPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
-    torch_dtype=dtype
+    torch_dtype=dtype,
+    vae=vae,
 )
 # Disable NSFW checker
 pipe.safety_checker = None
 pipe.feature_extractor = None
 
-pipe = pipe.to(device)
+# pipe = pipe.to(device) # CPU offload handles device placement
 
-# Memory optimizations
-# Note: 'enable_attention_slicing' can conflict with IP-Adapter loading in some versions/configurations.
-# If you run into OOM on CUDA, try enabling xformers if available.
+# Fix for "black image" issue on some GPUs: Ensure VAE is in float32
 if device == "cuda":
-    pipe.enable_xformers_memory_efficient_attention()
+    pipe.vae = pipe.vae.to(dtype=torch.float32)
 
 # -------------------------------------------------
 # IP-Adapter Setup
@@ -73,6 +80,10 @@ pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapt
 
 # Scale: 0.0 to 1.0 (Higher means more resemblance to the reference image)
 pipe.set_ip_adapter_scale(0.8)
+
+if device == "cuda":
+    # Enable CPU offload for 4GB VRAM - Must be called AFTER loading all components (like IP-Adapter)
+    pipe.enable_model_cpu_offload()
 
 # -------------------------------------------------
 # Generation
