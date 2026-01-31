@@ -1,5 +1,5 @@
 import torch
-from diffusers import StableDiffusionImg2ImgPipeline
+from diffusers import StableDiffusionImg2ImgPipeline, AutoencoderKL
 from PIL import Image
 
 import os
@@ -7,21 +7,34 @@ os.makedirs("outputs", exist_ok=True)
 
 if torch.cuda.is_available():
     device = "cuda"
-    dtype = torch.float16
+    # Force float32 for GTX 16xx series to avoid NaNs
+    dtype = torch.float32
+    print("✔ CUDA detected – using NVIDIA GPU (forcing float32)")
 else:
     device = "cpu"
     dtype = torch.float32
 
+# Load better VAE
+vae = AutoencoderKL.from_pretrained(
+    "stabilityai/sd-vae-ft-mse",
+    torch_dtype=dtype
+)
+
 pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
-    torch_dtype=dtype
+    torch_dtype=dtype,
+    vae=vae,
 )
 # Disable NSFW checker
 pipe.safety_checker = None
 pipe.feature_extractor = None
+pipe.requires_safety_checker = False
 
-pipe = pipe.to(device)
-pipe.enable_attention_slicing()
+if device == "cuda":
+    pipe.enable_sequential_cpu_offload()
+    pipe.enable_vae_slicing()
+    pipe.enable_vae_tiling()
+
 
 # referans yüz
 face_image = Image.open("refs/face.jpg").convert("RGB")
