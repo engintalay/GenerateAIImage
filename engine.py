@@ -12,6 +12,11 @@ class ImageGenerator:
     def __init__(self, device="cuda", dtype=torch.float16):
         self.device = device
         self.dtype = dtype
+        
+        # Clear VRAM cache to prevent OOM
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
         self.pipe = None
         self.face_app = None
         self._load_models()
@@ -20,8 +25,11 @@ class ImageGenerator:
         print("⏳ Loading models...")
         
         # 1. Face Analysis (InsightFace)
-        self.face_app = FaceAnalysis(name="buffalo_l", providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-        self.face_app.prepare(ctx_id=0, det_size=(640, 640))
+        # Try to use CUDA if available, fallback to CPU
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        self.face_app = FaceAnalysis(name="buffalo_l", providers=providers)
+        # 640 is more stable as a default, and 0.4 is more permissive
+        self.face_app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.4)
 
         # 2. ControlNet
         controlnet = ControlNetModel.from_pretrained(
@@ -55,6 +63,12 @@ class ImageGenerator:
         # Force VAE to float32 to avoid black images/NaNs
         self.pipe.vae.to(dtype=torch.float32)
         
+        # Memory Optimizations
+        try:
+            self.pipe.enable_xformers_memory_efficient_attention()
+        except Exception:
+            print("xformers not available, using default attention")
+        
         self.pipe.to(self.device)
         print("✔ Models loaded successfully.")
 
@@ -63,22 +77,40 @@ class ImageGenerator:
         Detects, crops face and returns (face_crop_pil, canny_edge_pil)
         """
         image_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+        h, w, _ = image_bgr.shape
+        print(f"👁 Processing image for face detection: {w}x{h}")
+        
+        # Try detection with current threshold
         faces = self.face_app.get(image_bgr)
         
+        # Fallback: Retry with even lower threshold if no faces found
         if len(faces) == 0:
-            print("⚠ No face detected, using full image")
+            for thresh in [0.3, 0.2, 0.1]:
+                print(f"🔍 Detection failed, retrying with det_thresh={thresh}...")
+                self.face_app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=thresh)
+                faces = self.face_app.get(image_bgr)
+                if len(faces) > 0:
+                    print(f"✨ Face found with thresh={thresh}!")
+                    break
+        
+        if len(faces) == 0:
+            print("⚠ Face detection failed completely even with thresh 0.1. Using full image.")
             return image_pil, self._make_canny(image_bgr)
 
         # Get largest face
         faces = sorted(faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
         face = faces[0]
         bbox = face.bbox
+        print(f"✔ Face detected! BBox: {bbox}")
         
         # Crop with context
-        h, w, _ = image_bgr.shape
+        # Ensure bbox is within image bounds
         x1, y1, x2, y2 = bbox
-        margin_x = (x2 - x1) * 0.3
-        margin_y = (y2 - y1) * 0.3
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        
+        margin_x = (x2 - x1) * 0.4
+        margin_y = (y2 - y1) * 0.4
         
         x1 = max(0, int(x1 - margin_x))
         y1 = max(0, int(y1 - margin_y))
@@ -125,7 +157,7 @@ class ImageGenerator:
             face_crop, _ = self.process_face(img)
             identity_images.append(face_crop)
             
-        print(f"🎨 Generating with {len(identity_images)} identity inputs...")
+        print(f"🎨 Generating with {len(identity_images)} identity inputs... Seed: {seed}")
         
         self.pipe.set_ip_adapter_scale(ip_scale)
         generator = torch.Generator(self.device).manual_seed(seed)
@@ -218,6 +250,7 @@ class ImageGenerator:
             item = q.get()
             if item is None:
                 break
-            yield item
+            # Yield (current_frame, detected_faces)
+            yield item, identity_images
         
         t.join()

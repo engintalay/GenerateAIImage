@@ -26,20 +26,25 @@ app = gr.mount_gradio_app(app, gradio_app, path="/ui")
 def read_root():
     return {"message": "Service is running. Go to /ui for interface or /docs for API."}
 
+import random
+
 @app.post("/generate")
 async def generate_api(
     prompt: str = Form(...),
     negative_prompt: str = Form("blurry, low quality"),
     num_steps: int = Form(30),
-    guidance_scale: float = Form(7.0),
-    ip_scale: float = Form(1.0),
-    control_scale: float = Form(0.5),
+    guidance_scale: float = Form(7.5),
+    ip_scale: float = Form(0.7),
+    control_scale: float = Form(0.4),
+    seed: int = Form(None),
     files: List[UploadFile] = File(...)
 ):
     """
     Generate image from prompt and uploaded images.
     Returns PNG image bytes.
     """
+    if seed is None:
+        seed = random.randint(0, 2**32 - 1)
     try:
         # Load images
         input_images = []
@@ -51,7 +56,7 @@ async def generate_api(
         # Generate
         # Generate (iterating the generator to get final result)
         output_image = None
-        for img in generator.generate(
+        for img, _ in generator.generate(
             prompt=prompt,
             negative_prompt=negative_prompt,
             input_images=input_images,
@@ -59,7 +64,7 @@ async def generate_api(
             guidance_scale=guidance_scale,
             ip_scale=ip_scale,
             control_scale=control_scale,
-            seed=42
+            seed=seed
         ):
             output_image = img
         
