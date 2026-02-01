@@ -2,16 +2,19 @@
 import os
 import sys
 import torch
+import cv2
+import numpy as np
 from PIL import Image
-from diffusers import StableDiffusionXLPipeline, AutoencoderKL
-from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+from diffusers import StableDiffusionXLControlNetPipeline, ControlNetModel, AutoencoderKL
+from transformers import CLIPVisionModelWithProjection
+from insightface.app import FaceAnalysis
 
 # -------------------------------------------------
 # Configuration
 # -------------------------------------------------
 REF_IMAGE_PATH = "refs/face.jpg"
 OUTPUT_DIR = "outputs"
-OUTPUT_FILENAME = "ip_sdxl_test_1.png"
+OUTPUT_FILENAME = "ip_canny_face_test_1.png"
 
 PROMPT = (
     "photo of a person sitting at an office desk, "
@@ -21,7 +24,7 @@ PROMPT = (
 
 NEGATIVE_PROMPT = (
     "different person, distorted face, deformed eyes, "
-    "unrealistic, low quality, cartoon, anime, scalar, blurry"
+    "unrealistic, low quality, cartoon, anime, semi-realistic, text, watermark"
 )
 
 # -------------------------------------------------
@@ -29,107 +32,116 @@ NEGATIVE_PROMPT = (
 # -------------------------------------------------
 if not os.path.exists(REF_IMAGE_PATH):
     print(f"❌ Error: Reference image not found at '{REF_IMAGE_PATH}'")
-    print("   Please place a face image in the 'refs' folder.")
     sys.exit(1)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# -------------------------------------------------
-# Device detection
-# -------------------------------------------------
 if torch.cuda.is_available():
     device = "cuda"
     dtype = torch.float16
     print("✔ CUDA detected – using NVIDIA GPU (float16)")
 else:
-    device = "cpu"
-    dtype = torch.float32
-    print("ℹ CUDA not available – using CPU")
+    print("❌ GPU required for this configuration.")
+    sys.exit(1)
 
 # -------------------------------------------------
-# Pipeline Initialization (SDXL)
+# Face Detection
 # -------------------------------------------------
-print("Loading Stable Diffusion XL pipeline...")
+print("Initializing Face Analysis...")
+app = FaceAnalysis(name="buffalo_l", providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+app.prepare(ctx_id=0, det_size=(640, 640))
 
-# Load SDXL
-# We use the official base model. 
-# VAE: SDXL VAE is usually good, but we can fix fp16 issues if they arise. 
-# For now, standard loading.
-pipe = StableDiffusionXLPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0",
-    torch_dtype=dtype,
-    use_safetensors=True,
-    variant="fp16"
+image_bgr = cv2.imread(REF_IMAGE_PATH)
+faces = app.get(image_bgr)
+
+if len(faces) == 0:
+    print("❌ No face detected!")
+    sys.exit(1)
+
+# Sort by size
+faces = sorted(faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
+face_info = faces[0]
+bbox = face_info.bbox
+
+# Crop with margin
+h, w, _ = image_bgr.shape
+x1, y1, x2, y2 = bbox
+margin_x = (x2 - x1) * 0.3 # increased margin for context
+margin_y = (y2 - y1) * 0.3
+x1 = max(0, int(x1 - margin_x))
+y1 = max(0, int(y1 - margin_y))
+x2 = min(w, int(x2 + margin_x))
+y2 = min(h, int(y2 + margin_y))
+
+face_crop_bgr = image_bgr[y1:y2, x1:x2]
+face_crop_rgb = cv2.cvtColor(face_crop_bgr, cv2.COLOR_BGR2RGB)
+face_image_pil = Image.fromarray(face_crop_rgb)
+
+# -------------------------------------------------
+# Prepare Canny Control Image
+# -------------------------------------------------
+# Canny edge detection on the cropped face
+# This forces the generated face to have the exact same lines/structure
+canny_image = cv2.Canny(face_crop_bgr, 100, 200)
+canny_image = canny_image[:, :, None]
+canny_image = np.concatenate([canny_image, canny_image, canny_image], axis=2)
+canny_image_pil = Image.fromarray(canny_image)
+
+# -------------------------------------------------
+# Pipeline Setup (ControlNet + IP-Adapter)
+# -------------------------------------------------
+print("Loading Models...")
+
+# 1. ControlNet Canny
+controlnet = ControlNetModel.from_pretrained(
+    "diffusers/controlnet-canny-sdxl-1.0",
+    torch_dtype=dtype
 )
 
-# -------------------------------------------------
-# IP-Adapter Setup for SDXL
-# -------------------------------------------------
-print("Loading IP-Adapter for SDXL...")
+# 2. Image Encoder (Explicit)
+image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+    "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+    torch_dtype=dtype
+)
 
-# For SDXL IP-Adapter Plus Face, we need the correct image encoder
-# The model uses CLIP-ViT-H-14-laion2B-s32B-b79K
-image_encoder_path = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
-# Usually Diffusers handles the image encoder if we load the ip-adapter, 
-# but for best results/control we often load it. 
-# However, let's try the simplified API first which is robust.
+# 3. Pipeline
+pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    controlnet=controlnet,
+    image_encoder=image_encoder,
+    torch_dtype=dtype,
+    variant="fp16",
+    use_safetensors=True
+)
 
-# Load IP Adapter
-# repo: h94/IP-Adapter
-# subfolder: sdxl_models
-# filename: ip-adapter-plus-face_sdxl_vit-h.safetensors
+# 4. IP-Adapter
 pipe.load_ip_adapter(
     "h94/IP-Adapter", 
     subfolder="sdxl_models", 
-    weight_name="ip-adapter-plus-face_sdxl_vit-h.safetensors",
-    image_encoder_folder="models/image_encoder" # This might be needed if not auto-downloaded
+    weight_name="ip-adapter-plus-face_sdxl_vit-h.safetensors"
 )
-# Note: if the image encoder isn't found, we might need to load it manually. 
-# But let's trust the library to fetch the default for the adapter or fail with a clear message.
-# "h94/IP-Adapter" repo has "models/image_encoder" which matches the vit-h usually.
 
-# Scale: 0.0 to 1.0
-pipe.set_ip_adapter_scale(0.7)
-
-# Move to GPU
 pipe.to(device)
-
-# -------------------------------------------------
-# Optimization
-# -------------------------------------------------
-# With 24GB VRAM, we don't need aggressive offloading for a single image.
-# We can enable some optimizations for speed.
-# pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead", fullgraph=True) # Optional, can be slow to compile first time
 
 # -------------------------------------------------
 # Generation
 # -------------------------------------------------
-print("Generating image (SDXL 1024x1024)...")
-face_image = Image.open(REF_IMAGE_PATH).convert("RGB")
+print("Generating image (ControlNet + IP-Adapter)...")
 
-# Callback to save intermediate steps
-intermediate_dir = os.path.join(OUTPUT_DIR, "intermediate_sdxl")
-os.makedirs(intermediate_dir, exist_ok=True)
-
-def save_intermediate_step(step, timestep, latents):
-    # Save fewer intermedates for SDXL as it's heavier
-    if step % 10 == 0: 
-        print(f"  [Step {step}] Processing...")
-        # Decoding SDXL latents mid-loop is expensive and complex due to VAE size.
-        # Skipping visual preview for speed, just logging.
+# High scale for IP-Adapter
+pipe.set_ip_adapter_scale(1.0) 
 
 image = pipe(
     prompt=PROMPT,
     negative_prompt=NEGATIVE_PROMPT,
-    ip_adapter_image=face_image,
-    num_inference_steps=30, # SDXL needs fewer steps usually
+    image=canny_image_pil, # ControlNet input
+    ip_adapter_image=face_image_pil, # IP-Adapter input
+    num_inference_steps=30,
     guidance_scale=7.0,
+    controlnet_conditioning_scale=0.50, # 0.5 is usually good for Canny to not be too rigid
     num_images_per_prompt=1,
     height=1024,
     width=1024,
-    callback=save_intermediate_step,
-    callback_steps=1,
-    # generator=torch.Generator(device).manual_seed(42) 
 ).images[0]
 
 output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME)
