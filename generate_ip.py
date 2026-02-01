@@ -17,14 +17,14 @@ OUTPUT_DIR = "outputs"
 OUTPUT_FILENAME = "ip_canny_face_test_1.png"
 
 PROMPT = (
-    "photo of a person sitting at an office desk, "
-    "drinking coffee, natural window light, "
-    "realistic photography, shallow depth of field, 8k, high quality"
+    "professional headshot photo of a person, "
+    "natural lighting, high quality, realistic, detailed face"
 )
 
 NEGATIVE_PROMPT = (
-    "different person, distorted face, deformed eyes, "
-    "unrealistic, low quality, cartoon, anime, semi-realistic, text, watermark"
+    "different person, wrong face, distorted face, deformed eyes, "
+    "unrealistic, low quality, cartoon, anime, painting, drawing, "
+    "multiple faces, blurry face"
 )
 
 # -------------------------------------------------
@@ -127,15 +127,15 @@ pipe.to(device)
 print("Generating image (ControlNet + IP-Adapter)...")
 
 # Higher scale for stronger face similarity
-pipe.set_ip_adapter_scale(1.5)  # Try 1.2-2.0 for stronger face preservation 
+pipe.set_ip_adapter_scale(1.8)  # Increased for maximum face preservation 
 
 image = pipe(
     prompt=PROMPT,
     negative_prompt=NEGATIVE_PROMPT,
     image=canny_image_pil, # ControlNet input
     ip_adapter_image=face_image_pil, # IP-Adapter input
-    num_inference_steps=30,
-    guidance_scale=7.0,
+    num_inference_steps=50,  # More steps for better face preservation
+    guidance_scale=5.0,      # Lower guidance for more IP-Adapter influence
     controlnet_conditioning_scale=0.3,  # Reduced from 0.5 for less structural control
     num_images_per_prompt=1,
     height=1024,
