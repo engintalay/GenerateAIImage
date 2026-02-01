@@ -63,11 +63,9 @@ faces = sorted(faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]
 face_info = faces[0]
 bbox = face_info.bbox
 
-# Crop with margin
-h, w, _ = image_bgr.shape
-x1, y1, x2, y2 = bbox
-margin_x = (x2 - x1) * 0.3 # increased margin for context
-margin_y = (y2 - y1) * 0.3
+# Crop with smaller margin for tighter face focus
+margin_x = (x2 - x1) * 0.2  # Reduced from 0.3 to focus more on face
+margin_y = (y2 - y1) * 0.2
 x1 = max(0, int(x1 - margin_x))
 y1 = max(0, int(y1 - margin_y))
 x2 = min(w, int(x2 + margin_x))
@@ -128,8 +126,8 @@ pipe.to(device)
 # -------------------------------------------------
 print("Generating image (ControlNet + IP-Adapter)...")
 
-# High scale for IP-Adapter
-pipe.set_ip_adapter_scale(1.0) 
+# Higher scale for stronger face similarity
+pipe.set_ip_adapter_scale(1.5)  # Try 1.2-2.0 for stronger face preservation 
 
 image = pipe(
     prompt=PROMPT,
@@ -138,7 +136,7 @@ image = pipe(
     ip_adapter_image=face_image_pil, # IP-Adapter input
     num_inference_steps=30,
     guidance_scale=7.0,
-    controlnet_conditioning_scale=0.50, # 0.5 is usually good for Canny to not be too rigid
+    controlnet_conditioning_scale=0.3,  # Reduced from 0.5 for less structural control
     num_images_per_prompt=1,
     height=1024,
     width=1024,
