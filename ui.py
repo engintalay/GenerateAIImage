@@ -18,16 +18,17 @@ def create_ui(generator):
         for file_path in files:
             images.append(Image.open(file_path).convert("RGB"))
             
-        output = generator.generate(
+        for output in generator.generate(
             prompt=prompt,
             negative_prompt=negative_prompt,
             input_images=images,
             num_steps=steps,
             guidance_scale=guidance,
             ip_scale=scale,
-            control_scale=control_scale
-        )
-        return output
+            control_scale=control_scale,
+            return_intermediates=True
+        ):
+            yield output
 
     with gr.Blocks(title="GenAI Image Service") as demo:
         gr.Markdown("# 🎨 AI Image Generator (SDXL + ControlNet + IP-Adapter)")

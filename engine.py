@@ -52,6 +52,9 @@ class ImageGenerator:
             weight_name="ip-adapter-plus-face_sdxl_vit-h.safetensors"
         )
         
+        # Force VAE to float32 to avoid black images/NaNs
+        self.pipe.vae.to(dtype=torch.float32)
+        
         self.pipe.to(self.device)
         print("✔ Models loaded successfully.")
 
@@ -103,7 +106,8 @@ class ImageGenerator:
                  guidance_scale: float = 7.0,
                  ip_scale: float = 1.0,
                  control_scale: float = 0.5,
-                 seed: int = 42):
+                 seed: int = 42,
+                 return_intermediates: bool = False):
         
         if not input_images:
             raise ValueError("At least one input image is required.")
@@ -116,11 +120,7 @@ class ImageGenerator:
         face_crop_main, canny_map = self.process_face(main_image)
         
         # Collect identity embeddings
-        # We start with the main image's face
         identity_images = [face_crop_main]
-        
-        # Process other images just for identity (simple crop or full use)
-        # For simplicity, we try to crop faces from them too, if fails use full.
         for img in input_images[1:]:
             face_crop, _ = self.process_face(img)
             identity_images.append(face_crop)
@@ -128,21 +128,96 @@ class ImageGenerator:
         print(f"🎨 Generating with {len(identity_images)} identity inputs...")
         
         self.pipe.set_ip_adapter_scale(ip_scale)
-        
         generator = torch.Generator(self.device).manual_seed(seed)
         
-        image = self.pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=canny_map, # ControlNet
-            ip_adapter_image=identity_images, # List of images for mixing
-            num_inference_steps=num_steps,
-            guidance_scale=guidance_scale,
-            controlnet_conditioning_scale=control_scale,
-            num_images_per_prompt=1,
-            height=1024,
-            width=1024,
-            generator=generator
-        ).images[0]
+        # Custom callback to yield intermediates
+        # Warning: Decoding latents at every step is slow. We do it every 5 steps.
+        last_image = None
         
-        return image
+        def callback(pipe, step, timestep, callback_kwargs):
+            nonlocal last_image
+            # Only decode every 5 steps to save time
+            if step % 5 == 0:
+                latents = callback_kwargs["latents"]
+                # Decode
+                with torch.no_grad():
+                    # VAE decode needs float32 to avoid NaN/Black images on some cards
+                    latents = latents.to(pipe.vae.device, dtype=pipe.vae.dtype)
+                    latents_scaled = latents / pipe.vae.config.scaling_factor
+                    image = pipe.vae.decode(latents_scaled, return_dict=False)[0]
+                    # Post-process
+                    image = (image / 2 + 0.5).clamp(0, 1)
+                    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+                    image = (image * 255).round().astype("uint8")
+                    last_image = Image.fromarray(image[0])
+            return callback_kwargs
+
+        # We need to wrap this for the thread logic below
+        
+        import threading
+        from queue import Queue
+        
+        q = Queue()
+        
+        def callback_wrapper(pipe, step, timestep, callback_kwargs):
+            # Only decode every 4 steps
+            if step % 4 == 0: 
+                latents = callback_kwargs["latents"]
+                with torch.no_grad():
+                    # VAE is float32 (enforced in init), latents might be float16.
+                    latents = latents.to(pipe.vae.dtype)
+                    
+                    latents_scaled = latents / pipe.vae.config.scaling_factor
+                    image = pipe.vae.decode(latents_scaled, return_dict=False)[0]
+                    
+                    image = (image / 2 + 0.5).clamp(0, 1)
+                    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+                    image = (image * 255).round().astype("uint8")
+                    pil_img = Image.fromarray(image[0])
+                    q.put(pil_img)
+            return callback_kwargs
+
+        def run_thread():
+            # Use output_type="latent" to manually handle the VAE decode with float32 precision
+            # to avoid black images and dtype mismatch errors.
+            result = self.pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=canny_map,
+                ip_adapter_image=[identity_images], # Nested list for multiple images on one adapter
+                num_inference_steps=num_steps,
+                guidance_scale=guidance_scale,
+                controlnet_conditioning_scale=control_scale,
+                num_images_per_prompt=1,
+                height=1024,
+                width=1024,
+                generator=generator,
+                callback_on_step_end=callback_wrapper,
+                output_type="latent"
+            )
+            
+            # Final Manual Decode
+            final_latents = result.images
+            with torch.no_grad():
+                # Ensure latents match VAE dtype (float32)
+                final_latents = final_latents.to(self.pipe.vae.dtype)
+                latents_scaled = final_latents / self.pipe.vae.config.scaling_factor
+                image = self.pipe.vae.decode(latents_scaled, return_dict=False)[0]
+                image = (image / 2 + 0.5).clamp(0, 1)
+                image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+                image = (image * 255).round().astype("uint8")
+                final_pil = Image.fromarray(image[0])
+                q.put(final_pil)
+                
+            q.put(None) # Signal done
+
+        t = threading.Thread(target=run_thread)
+        t.start()
+        
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield item
+        
+        t.join()

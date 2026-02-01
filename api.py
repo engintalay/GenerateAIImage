@@ -49,7 +49,9 @@ async def generate_api(
             input_images.append(image)
         
         # Generate
-        output_image = generator.generate(
+        # Generate (iterating the generator to get final result)
+        output_image = None
+        for img in generator.generate(
             prompt=prompt,
             negative_prompt=negative_prompt,
             input_images=input_images,
@@ -57,8 +59,9 @@ async def generate_api(
             guidance_scale=guidance_scale,
             ip_scale=ip_scale,
             control_scale=control_scale,
-            seed=42 # Or random
-        )
+            seed=42
+        ):
+            output_image = img
         
         # Return as PNG
         img_byte_arr = io.BytesIO()
