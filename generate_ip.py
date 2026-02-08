@@ -62,6 +62,8 @@ if len(faces) == 0:
 faces = sorted(faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
 face_info = faces[0]
 bbox = face_info.bbox
+x1, y1, x2, y2 = bbox
+h, w, c = image_bgr.shape
 
 # Crop with smaller margin for tighter face focus
 margin_x = (x2 - x1) * 0.2  # Reduced from 0.3 to focus more on face
@@ -119,12 +121,17 @@ pipe.load_ip_adapter(
     weight_name="ip-adapter-plus-face_sdxl_vit-h.safetensors"
 )
 
-pipe.to(device)
+# 5. Memory Optimizations for 4GB GPU
+pipe.enable_sequential_cpu_offload()
+pipe.vae.enable_slicing()
+pipe.vae.enable_tiling()
+# pipe.to(device)  # Removed: offloading handles placement. Direct .to(device) would move everything to GPU at once.
 
 # -------------------------------------------------
 # Generation
 # -------------------------------------------------
 print("Generating image (ControlNet + IP-Adapter)...")
+torch.cuda.empty_cache()
 
 # Higher scale for stronger face similarity
 pipe.set_ip_adapter_scale(1.8)  # Increased for maximum face preservation 
@@ -138,8 +145,8 @@ image = pipe(
     guidance_scale=5.0,      # Lower guidance for more IP-Adapter influence
     controlnet_conditioning_scale=0.3,  # Reduced from 0.5 for less structural control
     num_images_per_prompt=1,
-    height=1024,
-    width=1024,
+    height=768,
+    width=768,
 ).images[0]
 
 output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME)
