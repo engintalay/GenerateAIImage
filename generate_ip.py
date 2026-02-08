@@ -38,8 +38,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 if torch.cuda.is_available():
     device = "cuda"
-    dtype = torch.float16
-    print("✔ CUDA detected – using NVIDIA GPU (float16)")
+    dtype = torch.float32
+    print("✔ CUDA detected – using NVIDIA GPU (float32)")
 else:
     print("❌ GPU required for this configuration.")
     sys.exit(1)
@@ -98,7 +98,7 @@ controlnet = ControlNetModel.from_pretrained(
     torch_dtype=dtype
 )
 
-# 2. Image Encoder (Explicit)
+# 2. image encoder
 image_encoder = CLIPVisionModelWithProjection.from_pretrained(
     "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
     torch_dtype=dtype
@@ -110,7 +110,6 @@ pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
     controlnet=controlnet,
     image_encoder=image_encoder,
     torch_dtype=dtype,
-    variant="fp16",
     use_safetensors=True
 )
 
@@ -133,15 +132,15 @@ pipe.vae.enable_tiling()
 print("Generating image (ControlNet + IP-Adapter)...")
 torch.cuda.empty_cache()
 
-# Higher scale for stronger face similarity
-pipe.set_ip_adapter_scale(1.8)  # Increased for maximum face preservation 
+# Lower scale for stability and better generation
+pipe.set_ip_adapter_scale(0.7) 
 
 image = pipe(
     prompt=PROMPT,
     negative_prompt=NEGATIVE_PROMPT,
     image=canny_image_pil, # ControlNet input
     ip_adapter_image=face_image_pil, # IP-Adapter input
-    num_inference_steps=50,  # More steps for better face preservation
+    num_inference_steps=2,  # Adjusted for verification speed
     guidance_scale=5.0,      # Lower guidance for more IP-Adapter influence
     controlnet_conditioning_scale=0.3,  # Reduced from 0.5 for less structural control
     num_images_per_prompt=1,
