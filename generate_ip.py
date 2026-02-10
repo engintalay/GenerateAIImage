@@ -38,8 +38,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 if torch.cuda.is_available():
     device = "cuda"
-    dtype = torch.float32
-    print("✔ CUDA detected – using NVIDIA GPU (float32)")
+    dtype = torch.float16
+    print("✔ CUDA detected – using NVIDIA GPU (float16)")
 else:
     print("❌ GPU required for this configuration.")
     sys.exit(1)
@@ -104,12 +104,21 @@ image_encoder = CLIPVisionModelWithProjection.from_pretrained(
     torch_dtype=dtype
 )
 
-# 3. Pipeline
+# 3. Fixed VAE (sdxl-vae-fp16-fix)
+# This prevents black images and works in float16
+vae = AutoencoderKL.from_pretrained(
+    "madebyollin/sdxl-vae-fp16-fix", 
+    torch_dtype=dtype
+)
+
+# 4. Pipeline
 pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
     "stabilityai/stable-diffusion-xl-base-1.0",
     controlnet=controlnet,
     image_encoder=image_encoder,
+    vae=vae,
     torch_dtype=dtype,
+    variant="fp16",
     use_safetensors=True
 )
 
@@ -122,6 +131,7 @@ pipe.load_ip_adapter(
 
 # 5. Memory Optimizations for 4GB GPU
 pipe.enable_sequential_cpu_offload()
+pipe.upcast_vae = True       # Final fix for black images: decode in float32
 pipe.vae.enable_slicing()
 pipe.vae.enable_tiling()
 # pipe.to(device)  # Removed: offloading handles placement. Direct .to(device) would move everything to GPU at once.
@@ -140,7 +150,7 @@ image = pipe(
     negative_prompt=NEGATIVE_PROMPT,
     image=canny_image_pil, # ControlNet input
     ip_adapter_image=face_image_pil, # IP-Adapter input
-    num_inference_steps=2,  # Adjusted for verification speed
+    num_inference_steps=30,  # Restored for high-quality results
     guidance_scale=5.0,      # Lower guidance for more IP-Adapter influence
     controlnet_conditioning_scale=0.3,  # Reduced from 0.5 for less structural control
     num_images_per_prompt=1,
